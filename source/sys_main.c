@@ -52,6 +52,8 @@
 /* USER CODE BEGIN (1) */
 #include "adc.h"
 #include "sci.h"
+#include "het.h"
+#include "rti.h"
 #include "stdio.h"
 #include "stdint.h"
 #include <math.h>
@@ -66,37 +68,69 @@
 */
 
 /* USER CODE BEGIN (2) */
-static const uint32 s_het1pwmPolarity[8U] = { 3U, 3U, 3U, 3U, 3U, 3U, 3U, 3U, };
-uint8_t Buffer[100];
+void rtiNotification(uint32 notification);
 void wait(uint32);
 void UART_Display_Text(sciBASE_t *, uint32, uint8 *);
 void My_pwmSetSignal(hetRAMBASE_t * , uint32 , hetSIGNAL_t );
 int Average (int );
+
 #define UART scilinREG
 adcData_t adc_data[1];
 uint32 ch_count;
 int value;
-
+hetSIGNAL_t pwm0_het20_Servo;
+static const uint32 s_het1pwmPolarity[8U] = { 3U, 3U, 3U, 3U, 3U, 3U, 3U, 3U, };
+uint8_t Buffer[100];
+float distance =0.0;
+const int Init_duty = 80;
+int Length_buffer=0;
+float Kp =0.95, Ki=0.0, Kd=0.01;
+float integral=0.0, derivative=0.0;
+float error_k=0.0, error_k_1=0.0;
+float delta_t= 0.05, ref=10.0;
+float PID_signal=0.0;
+int PID_duty=0;
 /* USER CODE END */
 
 int main(void)
 {
 /* USER CODE BEGIN (3) */
-
     // L= 15cm ---> adc : 1058
     // L= 20 cm --->adc : 820
     // L= 7 cm  --> adc: 2058
+
+    //Lower limit duty --> 30
+    //Upper limit duty --> 130
+
     adcInit();
     sciInit();
+    hetInit();
+    rtiInit();
 
-    int Length_buffer=0;
+    rtiEnableNotification(rtiNOTIFICATION_COMPARE0);
+    _enable_IRQ();
+    rtiStartCounter(rtiCOUNTER_BLOCK0);
+
+
+    pwm0_het20_Servo.period = 20E3;
+    pwm0_het20_Servo.duty = 0;
     int raw_value;
-    float distance =0.0, a= 42203.11278, b= -1.140880872;
+    float a= 42203.11278, b= -1.140880872;
+
     while(1){
         raw_value = Average(30);
-        //ch_count=adcGetData(adcREG1,adcGROUP1,&adc_data[0]);
         distance = a * powf(raw_value, b);
-        Length_buffer=sprintf(Buffer, "Average: %d \t Distance: %f \n", raw_value, distance);
+        PID_duty = (int)PID_signal + Init_duty;
+        if (PID_duty > 130){
+            PID_duty=130;
+        }
+        else if(PID_duty<30){
+            PID_duty=30;
+        }
+        pwm0_het20_Servo.duty = PID_duty;
+        My_pwmSetSignal(hetRAM1, 0, pwm0_het20_Servo);
+
+        Length_buffer=sprintf(Buffer, "Distance: %f PID signal + comp : %d\n", distance, (int)PID_signal+ Init_duty);
         UART_Display_Text(UART, Length_buffer, Buffer);
         wait(1000);
     }
@@ -107,6 +141,15 @@ int main(void)
 
 
 /* USER CODE BEGIN (4) */
+void rtiNotification(uint32 notification)
+{
+    error_k= ref - distance;
+    integral = integral + error_k *delta_t;
+    derivative= (error_k - error_k_1)/delta_t;
+    PID_signal = Kp* error_k + Ki * integral + Kd * derivative;
+    error_k_1= error_k;
+}
+
 int Average (int num){
     int sum= 0;
     int i;
@@ -118,7 +161,6 @@ int Average (int num){
     }
 
     return (sum/num);
-
 }
 void wait(uint32 time)
 {
@@ -148,7 +190,7 @@ void My_pwmSetSignal(hetRAMBASE_t * hetRAM, uint32 pwm, hetSIGNAL_t signal)
     {
         action = (pwmPolarity == 3U) ? 0U : 2U;
     }
-    else if (signal.duty >= 100U)
+    else if (signal.duty >= 1000U)
     {
         action = (pwmPolarity == 3U) ? 2U : 0U;
     }
@@ -158,7 +200,7 @@ void My_pwmSetSignal(hetRAMBASE_t * hetRAM, uint32 pwm, hetSIGNAL_t signal)
     }
 
     hetRAM->Instruction[(pwm << 1U) + 41U].Control = ((hetRAM->Instruction[(pwm << 1U) + 41U].Control) & (~(uint32)(0x00000018U))) | (action << 3U);
-    hetRAM->Instruction[(pwm << 1U) + 41U].Data = ((((uint32)pwmPeriod * signal.duty) / 100U) << 7U ) + 128U;
+    hetRAM->Instruction[(pwm << 1U) + 41U].Data = ((((uint32)pwmPeriod * signal.duty) / 1000U) << 7U ) + 128U;
     hetRAM->Instruction[(pwm << 1U) + 42U].Data = ((uint32)pwmPeriod << 7U) - 128U;
 
 }
